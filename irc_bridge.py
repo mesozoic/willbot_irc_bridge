@@ -8,6 +8,7 @@ import BeautifulSoup
 import re
 import urllib
 
+from collections import defaultdict
 from multiprocessing import Process, Queue
 
 # Twisted
@@ -20,12 +21,15 @@ irc_to_hipchat_queue = Queue()
 hipchat_to_irc_queue = Queue()
 irc_bridge_verbose = False
 
+
 class IrcBridgePlugin(WillPlugin):
     def __init__(self):
         self.connected_to_irc = False
         self.connect()
 
     def bootstrap_irc(self):
+        irc_channel_to_hipchat_room = getattr(settings, 'IRC_CHANNELS_TO_HIPCHAT_ROOMS', {})
+        hipchat_room_to_irc_channel = dict((value, key) for (key, value) in irc_channel_to_hipchat_room)
         self.ircbot = IrcHipchatBridge(self.irc_host,
                                        self.irc_port,
                                        self.irc_password,
@@ -33,13 +37,14 @@ class IrcBridgePlugin(WillPlugin):
                                        self.channels,
                                        self.use_ssl,
                                        hipchat_to_irc_queue,
-                                       irc_to_hipchat_queue)
+                                       irc_to_hipchat_queue,
+                                       irc_channel_to_hipchat_room=irc_channel_to_hipchat_room,
+                                       hipchat_room_to_irc_channel=hipchat_room_to_irc_channel)
         self.ircbot.run()
 
     @require_settings("IRC_BRIDGE_IRC_SERVER",
                       "IRC_BRIDGE_IRC_PORT",
                       "IRC_BRIDGE_NICKNAME")
-
     def connect(self):
         if not self.connected_to_irc:
             self.irc_host = settings.IRC_BRIDGE_IRC_SERVER
@@ -59,7 +64,6 @@ class IrcBridgePlugin(WillPlugin):
             p.start()
             self.connected_to_irc = True
             self.say("Connecting to IRC")
-
 
     # This is where we grab hipchat messages and put them in a queue to head to IRC
     @require_settings("IRC_BRIDGE_IRC_SERVER",
@@ -84,6 +88,7 @@ class IrcBridgePlugin(WillPlugin):
 
             if irc_bridge_verbose:
                 self.reply(message, "Sent to IRC queue, queue length is now %d" % hipchat_to_irc_queue.qsize())
+
 
 class IrcBot(irc.IRCClient):
     """A IRC bot."""
@@ -132,7 +137,6 @@ class IrcBot(irc.IRCClient):
         old_nick = prefix.split('!')[0]
         new_nick = params[0]
 
-
     # For fun, override the method that determines how a nickname is changed on
     # collisions. The default method appends an underscore.
     def alterCollidedNick(self, nickname):
@@ -144,7 +148,8 @@ class IrcBot(irc.IRCClient):
 
 
 class IrcHipchatBridge(protocol.ClientFactory, HipChatMixin):
-    def __init__(self, host, port, password, nickname, channels, use_ssl, hipchat_to_irc_queue, irc_to_hipchat_queue):
+    def __init__(self, host, port, password, nickname, channels, use_ssl, hipchat_to_irc_queue, irc_to_hipchat_queue,
+                 irc_channel_to_hipchat_room=None, hipchat_room_to_irc_channel=None):
         self.ircbot = None
         self.channels = channels
         self.irc_host = host
@@ -154,6 +159,8 @@ class IrcHipchatBridge(protocol.ClientFactory, HipChatMixin):
         self.use_ssl = use_ssl
         self.hipchat_to_irc_queue = hipchat_to_irc_queue
         self.irc_to_hipchat_queue = irc_to_hipchat_queue
+        self.irc_channel_to_hipchat_room = irc_channel_to_hipchat_room or {}
+        self.hipchat_room_to_irc_channel = hipchat_room_to_irc_channel or {}
         # hipchat ratelimits to 30 requests/min so we run
         # the update thread every 2 seconds
         self.update_interval = 2
@@ -174,7 +181,6 @@ class IrcHipchatBridge(protocol.ClientFactory, HipChatMixin):
         print "connection failed:", reason
         reactor.stop()
 
-
     def update_irc(self):
         if hasattr(self.ircbot, "msg"):
             while not self.hipchat_to_irc_queue.empty():
@@ -183,13 +189,14 @@ class IrcHipchatBridge(protocol.ClientFactory, HipChatMixin):
                 # make this more generic in future as it's a hack
                 if m["user"] == "Confluence" or m["user"] == "Link":
                     soup = BeautifulSoup.BeautifulSoup(m["message"])
-                    message =soup.getText(" ")
+                    message = soup.getText(" ")
                     if m["user"] == "Confluence":
                         message = " ".join(message.split(" ")[2:])
                 else:
                     message = m["message"]
                 if not re.match("^\s*$", message):
-                    self.ircbot.msg(m["channel"], "<%s> %s" % (m["user"], message.encode('utf-8')))
+                    channel = self.hipchat_room_to_irc_channel.get(m['channel'], m['channel'])
+                    self.ircbot.msg(channel, "<%s> %s" % (m["user"], message.encode('utf-8')))
         else:
             print "Not connected yet"
 
@@ -200,13 +207,11 @@ class IrcHipchatBridge(protocol.ClientFactory, HipChatMixin):
         # so every time it runs it batches up the messages for a
         # room and sends them as a single hipchat "message"
         # or that's the theory at least
-        todo = {}
+        todo = defaultdict(list)
         while not self.irc_to_hipchat_queue.empty():
             m = self.irc_to_hipchat_queue.get()
-            try:
-                todo[m["channel"]].append((m["user"], m["message"]))
-            except KeyError:
-                todo[m["channel"]] = [(m["user"], m["message"])]
+            channel = self.irc_channel_to_hipchat_room.get(m['channel'], m['channel'])
+            todo[channel].append((m['user'], m['message']))
 
         for channel in todo:
             txt_message = ""
