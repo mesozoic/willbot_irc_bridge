@@ -24,12 +24,12 @@ irc_bridge_verbose = False
 
 class IrcBridgePlugin(WillPlugin):
     def __init__(self):
+        self.hipchat_room_to_irc_channel = getattr(settings, 'HIPCHAT_ROOMS_TO_IRC_CHANNELS', {})
+        self.irc_channel_to_hipchat_room = dict((value, key) for (key, value) in hipchat_room_to_irc_channel.iteritems())
         self.connected_to_irc = False
         self.connect()
 
     def bootstrap_irc(self):
-        hipchat_room_to_irc_channel = getattr(settings, 'HIPCHAT_ROOMS_TO_IRC_CHANNELS', {})
-        irc_channel_to_hipchat_room = dict((value, key) for (key, value) in hipchat_room_to_irc_channel.iteritems())
         self.ircbot = IrcHipchatBridge(self.irc_host,
                                        self.irc_port,
                                        self.irc_password,
@@ -38,8 +38,8 @@ class IrcBridgePlugin(WillPlugin):
                                        self.use_ssl,
                                        hipchat_to_irc_queue,
                                        irc_to_hipchat_queue,
-                                       irc_channel_to_hipchat_room=irc_channel_to_hipchat_room,
-                                       hipchat_room_to_irc_channel=hipchat_room_to_irc_channel)
+                                       irc_channel_to_hipchat_room=self.irc_channel_to_hipchat_room,
+                                       hipchat_room_to_irc_channel=self.hipchat_room_to_irc_channel)
         self.ircbot.run()
 
     @require_settings("IRC_BRIDGE_IRC_SERVER",
@@ -49,7 +49,10 @@ class IrcBridgePlugin(WillPlugin):
         if not self.connected_to_irc:
             self.irc_host = settings.IRC_BRIDGE_IRC_SERVER
             self.irc_port = int(settings.IRC_BRIDGE_IRC_PORT)
-            self.channels = [ "#%s" % i for i in settings.ROOMS ]
+            self.channels = [
+                self.hipchat_room_to_irc_channel.get(room, '#%s' % room)
+                for room in settings.ROOMS
+            ]
             self.irc_nickname = settings.IRC_BRIDGE_NICKNAME
             if hasattr(settings, "IRC_BRIDGE_PASSWORD"):
                 self.irc_password = settings.IRC_BRIDGE_PASSWORD
