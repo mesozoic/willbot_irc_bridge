@@ -28,8 +28,8 @@ class IrcBridgePlugin(WillPlugin):
         self.connect()
 
     def bootstrap_irc(self):
-        irc_channel_to_hipchat_room = getattr(settings, 'IRC_CHANNELS_TO_HIPCHAT_ROOMS', {})
-        hipchat_room_to_irc_channel = dict((value, key) for (key, value) in irc_channel_to_hipchat_room)
+        hipchat_room_to_irc_channel = getattr(settings, 'HIPCHAT_ROOMS_TO_IRC_CHANNELS', {})
+        irc_channel_to_hipchat_room = dict((value, key) for (key, value) in hipchat_room_to_irc_channel.iteritems())
         self.ircbot = IrcHipchatBridge(self.irc_host,
                                        self.irc_port,
                                        self.irc_password,
@@ -234,5 +234,3 @@ class IrcHipchatBridge(protocol.ClientFactory, HipChatMixin):
             reactor.connectTCP(self.irc_host, self.irc_port, self)
 
         reactor.run()
-
-
